@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from "react";
 import StripePaymentForm from "./StripePaymentForm";
-import Cookies from 'js-cookie';
+import Cookies from "js-cookie";
 import type { Pack } from "@/types/pack";
+import Link from "next/link";
 
 export default function PackList() {
   const [packs, setPacks] = useState<Pack[]>([]);
@@ -18,19 +19,19 @@ export default function PackList() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch('/api/pack-coins', {
-          credentials: 'include',
+        const res = await fetch("/api/pack-coins", {
+          credentials: "include",
         });
         if (!res.ok) {
           const data = await res.json();
-          setError(data.error || 'Failed to fetch packs');
+          setError(data.error || "Failed to fetch packs");
           setPacks([]);
         } else {
           const data = await res.json();
           setPacks(Array.isArray(data) ? data : []);
         }
       } catch (e) {
-        setError('Failed to fetch packs');
+        setError("Failed to fetch packs");
         setPacks([]);
       }
       setLoading(false);
@@ -55,9 +56,9 @@ export default function PackList() {
   };
 
   const handleLogout = () => {
-    Cookies.remove('access_token', { path: '/' });
-    Cookies.remove('refresh_token', { path: '/' });
-    window.location.href = '/login';
+    Cookies.remove("access_token", { path: "/" });
+    Cookies.remove("refresh_token", { path: "/" });
+    window.location.href = "/login";
   };
 
   if (loading) {
@@ -83,10 +84,15 @@ export default function PackList() {
     <>
       <ul className="space-y-4">
         {packs.map((pack) => (
-          <li key={pack.id} className="border p-4 rounded shadow flex justify-between items-center">
+          <li
+            key={pack.id}
+            className="border p-4 rounded shadow flex justify-between items-center"
+          >
             <div>
               <h2 className="text-xl font-semibold">{pack.subject}</h2>
-              <p>{pack.coins} coins - ${pack.pricing.toFixed(2)}</p>
+              <p>
+                {pack.coins} coins - ${pack.pricing.toFixed(2)}
+              </p>
             </div>
             <button
               className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
@@ -98,13 +104,19 @@ export default function PackList() {
         ))}
       </ul>
 
-      <div className="mt-8 flex justify-center">
+      <div className="mt-8 flex justify-center items-center gap-2">
         <button
           onClick={handleLogout}
           className="bg-gray-200 hover:bg-gray-300 text-gray-800 px-6 py-2 rounded shadow"
         >
           Log out
         </button>
+        <Link
+          href="/chat"
+          className="bg-pink-200 hover:bg-pink-500 text-pink-500 hover:text-white px-6 py-2 rounded shadow"
+        >
+          Chatbox
+        </Link>
       </div>
 
       {showPaymentForm && selectedPack && (

@@ -8,7 +8,7 @@ Create a `.env.local` file in your project root with the following variables:
 
 ```env
 # Directus Configuration
-NEXT_PUBLIC_API_URL=https://your-directus-instance.com
+NEXT_PUBLIC_API_URL=https://wanesni.com
 DIRECTUS_TOKEN=your-directus-token
 
 # Stripe Configuration

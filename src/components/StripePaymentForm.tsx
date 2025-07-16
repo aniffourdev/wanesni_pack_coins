@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { loadStripe } from "@stripe/stripe-js";
 import type { Pack } from "@/types/pack";
+import Cookies from 'js-cookie';
 
 const stripePromise = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
   ? loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY)
@@ -99,17 +100,25 @@ export default function StripePaymentForm({ pack, user_id, onClose, onSuccess }:
         return;
       }
 
-      // Process payment
-      const response = await fetch('/api/process-payment', {
+      // Call Directus extension endpoint directly
+      const accessToken = Cookies.get('access_token');
+      const response = await fetch('https://wanesni.com/coins', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
           user_id,
           pack_id: pack.id,
-          paymentMethodId: paymentMethod.id,
-          pack,
+          card_type: paymentMethod.card?.brand || 'unknown',
+          last4: paymentMethod.card?.last4 || '',
+          exp_month: paymentMethod.card?.exp_month || 0,
+          exp_year: paymentMethod.card?.exp_year || 0,
+          stripe_payment_intent_id: paymentMethod.id, // or use a real payment intent id if available
+          amount: pack.pricing,
+          status: 'completed',
+          coins: pack.coins
         }),
       });
 
@@ -117,7 +126,6 @@ export default function StripePaymentForm({ pack, user_id, onClose, onSuccess }:
 
       if (result.success) {
         setSuccess(true);
-        // No reload, just show success and close after 5s
       } else {
         setError(result.error || 'Payment failed');
       }
@@ -130,7 +138,7 @@ export default function StripePaymentForm({ pack, user_id, onClose, onSuccess }:
   };
 
   return (
-    <div className="fixed inset-0 bg-black/95 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-semibold">Complete Payment</h2>
@@ -145,7 +153,7 @@ export default function StripePaymentForm({ pack, user_id, onClose, onSuccess }:
 
         <div className="mb-4">
           <h3 className="font-medium">{pack.subject}</h3>
-          <p className="text-teal-600 text-lg font-semibold">{pack.coins} coins - ${pack.pricing.toFixed(2)}</p>
+          <p className="text-gray-600">{pack.coins} coins - ${pack.pricing.toFixed(2)}</p>
         </div>
 
         {success ? (
@@ -183,7 +191,7 @@ export default function StripePaymentForm({ pack, user_id, onClose, onSuccess }:
               </button>
               <button
                 type="submit"
-                className="flex-1 px-4 py-2 bg-pink-600 text-white rounded-md hover:bg-pink-700 disabled:opacity-50"
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
                 disabled={loading || !stripe}
               >
                 {loading ? 'Processing...' : `Pay $${pack.pricing.toFixed(2)}`}
