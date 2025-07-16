@@ -6,6 +6,7 @@ import axios from "axios";
 import Cookies from 'js-cookie';
 import { FaGift } from 'react-icons/fa';
 import { FaImage } from 'react-icons/fa';
+import { FaRegCommentDots } from 'react-icons/fa';
 
 // Update socket initialization to include access token
 type SocketOptions = {
@@ -28,6 +29,13 @@ interface Message {
   media?: { id: string };
 }
 
+const getSocketUrl = () => {
+  if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+    return 'http://localhost:3001';
+  }
+  return 'wss://socket.wanesni.com';
+};
+
 const Chat: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageInput, setMessageInput] = useState("");
@@ -46,12 +54,13 @@ const Chat: React.FC = () => {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [uploadedImageId, setUploadedImageId] = useState<string | null>(null);
   const [userCoins, setUserCoins] = useState<number>(0);
+  const [isTyping, setIsTyping] = useState(false);
 
   // Setup socket connection when userId is available
   useEffect(() => {
     if (!userId) return;
 
-    const newSocket = io("wss://socket.wanesni.com", {
+    const newSocket = io(getSocketUrl(), {
       auth: {
         token: accessToken || '',
       },
@@ -72,6 +81,24 @@ const Chat: React.FC = () => {
       newSocket.disconnect();
     };
   }, [userId]);
+
+  // Listen for typing events
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleTyping = (data: { from: string, to: string }) => {
+      // Show typing if the current user is the intended recipient and the sender is the selected user
+      if (userId === data.to && selectedUser && data.from === selectedUser.id) {
+        setIsTyping(true);
+        setTimeout(() => setIsTyping(false), 1500);
+      }
+    };
+
+    socket.on("typing", handleTyping);
+    return () => {
+      socket.off("typing", handleTyping);
+    };
+  }, [socket, selectedUser, userId]);
 
   // Fetch current user ID
   useEffect(() => {
@@ -217,6 +244,13 @@ const Chat: React.FC = () => {
     if (selectedImage) uploadImage();
   }, [selectedImage]);
 
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setMessageInput(e.target.value);
+    if (socket && selectedUser && userId) {
+      socket.emit("typing", { to: selectedUser.id, from: userId });
+    }
+  };
+
   const sendMessage = async () => {
     setSendError(null);
     console.log('sendMessage called', { userId, selectedUser, messageInput, sending });
@@ -325,22 +359,33 @@ const Chat: React.FC = () => {
                 <div className="text-center text-gray-400 mt-10">Start Texting "{selectedUser.first_name || selectedUser.id}" Now</div>
               )}
               {messages.map((message, index) => {
-                // Determine if the message is sent by the current user
                 const senderId = typeof message.user_created === 'object' ? message.user_created.id : message.user_created;
-                const isSender = senderId === userId;
-                const isReceiver = selectedUser && senderId === selectedUser.id;
+                const isMe = senderId === userId;
+                const isOther = selectedUser && senderId === selectedUser.id;
+                // Debug log
+                console.log('Message debug:', {
+                  senderId,
+                  userId,
+                  selectedUserId: selectedUser?.id,
+                  isMe,
+                  isOther,
+                  message
+                });
                 const isGift = Array.isArray(message.message_type)
                   ? message.message_type.includes('gift')
                   : message.message_type === 'gift';
                 return (
                   <div
                     key={message.id || index}
-                    className={`flex mb-2 ${isSender ? 'justify-end' : 'justify-start'}`}
+                    className={`flex mb-3 ${isOther ? 'justify-end' : 'justify-start'}`}
                   >
                     <div
-                      className={`max-w-xs px-4 py-2 rounded-2xl shadow text-sm break-words ${isSender ? 'bg-pink-500 text-white rounded-br-none' : isReceiver ? 'bg-pink-200 text-pink-900 rounded-bl-none' : 'bg-gray-200 text-gray-900 rounded-bl-none'}`}
+                      className={`max-w-xs px-4 py-2 rounded-2xl shadow text-sm break-words 
+                        ${isOther ? 'bg-pink-500 text-white rounded-br-none' : 'bg-gray-200 text-gray-900 rounded-bl-none'}
+                      `}
+                      style={{ minWidth: '80px' }}
                     >
-                      <div className="font-bold mb-1">
+                      <div className="font-bold mb-1 text-xs opacity-70">
                         {typeof message.user_created === 'object'
                           ? message.user_created.first_name || message.user_created.id
                           : message.user_created}
@@ -352,7 +397,7 @@ const Chat: React.FC = () => {
                             alt={'Gift'}
                             className="w-16 h-16 object-contain mb-1 rounded"
                           />
-                          <span className="text-xs font-semibold text-pink-500">{message.gift_id.name_gift}</span>
+                          <span className="text-xs font-semibold text-pink-200">{message.gift_id.name_gift}</span>
                           {message.message && <span className="text-xs mt-1">{message.message}</span>}
                         </div>
                       ) : message.media?.id ? (
@@ -402,12 +447,18 @@ const Chat: React.FC = () => {
             )}
             <input
               type="text"
+              className="flex-1 border rounded-l px-3 py-2 focus:outline-none"
+              placeholder="Type your message..."
               value={messageInput}
-              onChange={(e) => setMessageInput(e.target.value)}
-              placeholder="Type your message here..."
-              className="flex-1 p-2 border border-gray-300 rounded-l-lg focus:outline-none focus:ring-2 focus:ring-pink-500"
-              disabled={userLoading || !!userLoadError}
+              onChange={handleInputChange}
+              disabled={sending}
             />
+            {isTyping && (
+              <div className="flex items-center text-gray-500 mt-2">
+                <FaRegCommentDots className="mr-2 animate-bounce" />
+                <span>{selectedUser?.first_name || "User"} is typing...</span>
+              </div>
+            )}
             {selectedGift && (
               <div className="flex items-center ml-2 bg-pink-100 px-2 py-1 rounded-full text-pink-700 text-xs">
                 <FaGift className="mr-1" />
