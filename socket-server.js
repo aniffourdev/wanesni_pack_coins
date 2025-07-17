@@ -18,18 +18,42 @@ const io = new Server(server, {
   }
 });
 
+// Store online users
+const onlineUsers = new Map(); // socketId -> { userId, firstName, socket }
+
 io.on("connection", (socket) => {
   console.log("A user connected:", socket.id);
+
+  // Listen for user initialization
+  socket.on("init", (data) => {
+    console.log("Init event:", data);
+    if (data.userId) {
+      // Store user as online
+      const userInfo = {
+        userId: data.userId,
+        firstName: data.firstName || data.userId,
+        socket: socket
+      };
+      onlineUsers.set(socket.id, userInfo);
+      
+      console.log("User added to online users:", userInfo);
+      
+      // Emit updated online users list to all clients
+      const onlineUsersList = Array.from(onlineUsers.values()).map(user => ({
+        id: user.userId,
+        first_name: user.firstName
+      }));
+      io.emit("onlineUsers", onlineUsersList);
+      
+      console.log("Online users list emitted:", onlineUsersList);
+      console.log("Total online users:", onlineUsers.size);
+    }
+  });
 
   // Listen for messages from clients
   socket.on("message", (data) => {
     // Broadcast the message to all clients (or use rooms for private chats)
     io.emit("message", data);
-  });
-
-  socket.on("init", (data) => {
-    // You can use this to join rooms or authenticate users
-    console.log("Init event:", data);
   });
 
   // Relay typing events
@@ -40,6 +64,20 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log("User disconnected:", socket.id);
+    
+    // Remove user from online users
+    if (onlineUsers.has(socket.id)) {
+      onlineUsers.delete(socket.id);
+      
+      // Emit updated online users list to all clients
+      const onlineUsersList = Array.from(onlineUsers.values()).map(user => ({
+        id: user.userId,
+        first_name: user.firstName
+      }));
+      io.emit("onlineUsers", onlineUsersList);
+      
+      console.log("Online users after disconnect:", onlineUsersList);
+    }
   });
 });
 

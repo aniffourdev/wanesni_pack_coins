@@ -7,6 +7,7 @@ import Cookies from 'js-cookie';
 import { FaGift } from 'react-icons/fa';
 import { FaImage } from 'react-icons/fa';
 import { FaRegCommentDots } from 'react-icons/fa';
+import { FaMicrophone, FaStop } from 'react-icons/fa';
 
 // Update socket initialization to include access token
 type SocketOptions = {
@@ -29,13 +30,6 @@ interface Message {
   media?: { id: string };
 }
 
-const getSocketUrl = () => {
-  if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-    return 'http://localhost:3001';
-  }
-  return 'wss://socket.wanesni.com';
-};
-
 const Chat: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageInput, setMessageInput] = useState("");
@@ -45,6 +39,7 @@ const Chat: React.FC = () => {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [users, setUsers] = useState<{ id: string; first_name?: string }[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<{ id: string; first_name?: string }[]>([]);
   const [selectedUser, setSelectedUser] = useState<{ id: string; first_name?: string } | null>(null);
   const [socket, setSocket] = useState<any>(null);
   const [showGiftModal, setShowGiftModal] = useState(false);
@@ -55,12 +50,29 @@ const Chat: React.FC = () => {
   const [uploadedImageId, setUploadedImageId] = useState<string | null>(null);
   const [userCoins, setUserCoins] = useState<number>(0);
   const [isTyping, setIsTyping] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [socketUrl, setSocketUrl] = useState<string>('');
+
+  // Get socket URL on client side only
+  useEffect(() => {
+    const getSocketUrl = () => {
+      if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+        return 'http://localhost:3001';
+      }
+      return 'wss://socket.wanesni.com';
+    };
+    setSocketUrl(getSocketUrl());
+  }, []);
 
   // Setup socket connection when userId is available
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || users.length === 0 || !socketUrl) return;
 
-    const newSocket = io(getSocketUrl(), {
+    const newSocket = io(socketUrl, {
       auth: {
         token: accessToken || '',
       },
@@ -68,11 +80,24 @@ const Chat: React.FC = () => {
 
     newSocket.on("connect", () => {
       console.log("Connected to WebSocket");
-      newSocket.emit("init", { type: "init", userId });
+      // Get current user info to send with init
+      const currentUser = users.find(u => u.id === userId);
+      console.log("Current user for init:", currentUser);
+      newSocket.emit("init", {
+        type: "init",
+        userId,
+        firstName: currentUser?.first_name || userId
+      });
     });
 
     newSocket.on("message", (data: Message) => {
       setMessages((prevMessages) => [...prevMessages, data]);
+    });
+
+    // Listen for online users updates
+    newSocket.on("onlineUsers", (onlineUsersList: { id: string; first_name?: string }[]) => {
+      console.log("Online users received:", onlineUsersList);
+      setOnlineUsers(onlineUsersList);
     });
 
     setSocket(newSocket);
@@ -80,7 +105,7 @@ const Chat: React.FC = () => {
     return () => {
       newSocket.disconnect();
     };
-  }, [userId]);
+  }, [userId, users, socketUrl]); // Add users and socketUrl to dependencies
 
   // Listen for typing events
   useEffect(() => {
@@ -159,7 +184,7 @@ const Chat: React.FC = () => {
     };
     fetchMessages();
 
-    // Fetch all users
+    // Fetch all users (for reference, but we'll use online users for display)
     const fetchUsers = async () => {
       try {
         const response = await axios.get("https://wanesni.com/users", {
@@ -244,6 +269,48 @@ const Chat: React.FC = () => {
     if (selectedImage) uploadImage();
   }, [selectedImage]);
 
+  // Audio recording functions
+  const startRecording = async () => {
+    try {
+      // Simple microphone access
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: true 
+      });
+      
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        setAudioBlob(blob);
+        setAudioUrl(URL.createObjectURL(blob));
+        setAudioChunks(chunks);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      recorder.start();
+      setMediaRecorder(recorder);
+      setIsRecording(true);
+      setAudioChunks([]);
+    } catch (error: any) {
+      console.error('Error accessing microphone:', error);
+      alert('Please allow microphone access when prompted and try again.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.stop();
+      setIsRecording(false);
+    }
+  };
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setMessageInput(e.target.value);
     if (socket && selectedUser && userId) {
@@ -321,6 +388,71 @@ const Chat: React.FC = () => {
     setSending(false);
   };
 
+  const sendAudioMessage = async () => {
+    if (!audioBlob || !selectedUser || !userId) return;
+
+    setSending(true);
+    try {
+      // Create FormData for audio file
+      const formData = new FormData();
+      const fileExtension = audioBlob.type.includes('webm') ? 'webm' : 'mp4';
+      formData.append('file', audioBlob, `audio.${fileExtension}`);
+
+      // Upload audio file
+      const uploadResponse = await axios.post('https://wanesni.com/files', formData, {
+        headers: {
+          Authorization: accessToken ? `Bearer ${accessToken}` : '',
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      const audioFileId = uploadResponse.data.data.id;
+
+      // Send audio message
+      const payload = {
+        receiver_id: selectedUser.id,
+        message_type: ["audio"],
+        message: "Audio message",
+        status: "sent",
+        media: audioFileId
+      };
+
+      const response = await axios.post(
+        "https://wanesni.com/items/chats",
+        payload,
+        {
+          headers: {
+            Authorization: accessToken ? `Bearer ${accessToken}` : '',
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      setMessages((prev) => [...prev, response.data.data]);
+
+      // Emit socket message
+      if (socket) {
+        socket.emit("message", {
+          type: "message",
+          to: selectedUser.id,
+          message: "Audio message",
+          message_type: ["audio"],
+          media: audioFileId,
+        });
+      }
+
+      // Clear audio state
+      setAudioBlob(null);
+      setAudioUrl(null);
+      setAudioChunks([]);
+      setMediaRecorder(null);
+    } catch (error: any) {
+      console.error("Error sending audio:", error);
+      setSendError(error?.response?.data?.error || error.message || 'Failed to send audio');
+    }
+    setSending(false);
+  };
+
   return (
     <div className="flex flex-col w-full max-w-md mx-auto h-screen bg-white shadow-md">
       {userLoading && <div className="p-4 text-center text-gray-500">Loading user...</div>}
@@ -333,7 +465,7 @@ const Chat: React.FC = () => {
           <div className="p-2 border-b border-gray-200 py-5">
             <div className="mb-5 uppercase text-center">Select a user to chat with:</div>
             <div className="flex flex-wrap gap-2">
-              {users.filter(u => u.id && u.id !== userId).map((user) => (
+              {onlineUsers.filter(u => u.id && u.id !== userId).map((user) => (
                 <button
                   key={user.id}
                   onClick={() => setSelectedUser(user)}
@@ -374,13 +506,16 @@ const Chat: React.FC = () => {
                 const isGift = Array.isArray(message.message_type)
                   ? message.message_type.includes('gift')
                   : message.message_type === 'gift';
+                const isAudio = Array.isArray(message.message_type)
+                  ? message.message_type.includes('audio')
+                  : message.message_type === 'audio';
                 return (
                   <div
                     key={message.id || index}
                     className={`flex mb-3 ${isOther ? 'justify-end' : 'justify-start'}`}
                   >
                     <div
-                      className={`max-w-xs px-4 py-2 rounded-2xl shadow text-sm break-words 
+                      className={`max-w-xs px-4 py-2 rounded-2xl shadow text-sm break-words
                         ${isOther ? 'bg-pink-500 text-white rounded-br-none' : 'bg-gray-200 text-gray-900 rounded-bl-none'}
                       `}
                       style={{ minWidth: '80px' }}
@@ -400,6 +535,13 @@ const Chat: React.FC = () => {
                           <span className="text-xs font-semibold text-pink-200">{message.gift_id.name_gift}</span>
                           {message.message && <span className="text-xs mt-1">{message.message}</span>}
                         </div>
+                      ) : isAudio && message.media?.id ? (
+                        <div className="flex flex-col items-center">
+                          <audio controls className="w-32 h-8 mb-1">
+                            <source src={`https://wanesni.com/assets/${message.media.id}`} type="audio/wav" />
+                          </audio>
+                          {message.message && <span className="text-xs mt-1">{message.message}</span>}
+                        </div>
                       ) : message.media?.id ? (
                         <div className="flex flex-col items-center">
                           <img
@@ -416,6 +558,12 @@ const Chat: React.FC = () => {
                   </div>
                 );
               })}
+              {isTyping && (
+                <div className="flex items-end justify-start text-gray-500 mb-2">
+                  <FaRegCommentDots className="mr-2 animate-bounce" />
+                  <span>{selectedUser?.first_name || "User"} is typing...</span>
+                </div>
+              )}
             </div>
           )}
           <div className="p-4 border-t border-gray-200 flex">
@@ -445,6 +593,30 @@ const Chat: React.FC = () => {
                 </button>
               </div>
             )}
+            {/* Audio Icon */}
+            <button
+              type="button"
+              className="mr-2 flex items-center justify-center text-pink-500 hover:text-pink-700 focus:outline-none"
+              onClick={isRecording ? stopRecording : startRecording}
+              style={{ fontSize: 24 }}
+              disabled={sending}
+            >
+              {isRecording ? <FaStop className="text-red-500" /> : <FaMicrophone />}
+            </button>
+            {audioUrl && (
+              <div className="flex items-center ml-2 bg-pink-100 px-2 py-1 rounded-full text-pink-700 text-xs">
+                <audio controls className="w-20 h-8">
+                  <source src={audioUrl} type="audio/wav" />
+                </audio>
+                <button
+                  type="button"
+                  className="ml-1 text-pink-500 hover:text-pink-700"
+                  onClick={() => { setAudioBlob(null); setAudioUrl(null); setAudioChunks([]); }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
             <input
               type="text"
               className="flex-1 border rounded-l px-3 py-2 focus:outline-none"
@@ -453,12 +625,6 @@ const Chat: React.FC = () => {
               onChange={handleInputChange}
               disabled={sending}
             />
-            {isTyping && (
-              <div className="flex items-center text-gray-500 mt-2">
-                <FaRegCommentDots className="mr-2 animate-bounce" />
-                <span>{selectedUser?.first_name || "User"} is typing...</span>
-              </div>
-            )}
             {selectedGift && (
               <div className="flex items-center ml-2 bg-pink-100 px-2 py-1 rounded-full text-pink-700 text-xs">
                 <FaGift className="mr-1" />
@@ -473,11 +639,11 @@ const Chat: React.FC = () => {
               </div>
             )}
             <button
-              onClick={sendMessage}
-              className={`bg-pink-500 text-white p-2 rounded-r-lg hover:bg-pink-600 focus:outline-none focus:ring-2 focus:ring-pink-500 ${sending || !selectedUser || !messageInput.trim() && !selectedGift || userLoading || userLoadError ? 'opacity-50 cursor-not-allowed' : ''}`}
-              disabled={sending || !selectedUser || (!messageInput.trim() && !selectedGift) || userLoading || !!userLoadError}
+              onClick={audioBlob ? sendAudioMessage : sendMessage}
+              className={`bg-pink-500 text-white p-2 rounded-r-lg hover:bg-pink-600 focus:outline-none focus:ring-2 focus:ring-pink-500 ${sending || !selectedUser || (!messageInput.trim() && !selectedGift && !audioBlob) || userLoading || userLoadError ? 'opacity-50 cursor-not-allowed' : ''}`}
+              disabled={sending || !selectedUser || (!messageInput.trim() && !selectedGift && !audioBlob) || userLoading || !!userLoadError}
             >
-              Send
+              {audioBlob ? 'Send Audio' : 'Send'}
             </button>
             {/* Gift Modal */}
             {showGiftModal && (
