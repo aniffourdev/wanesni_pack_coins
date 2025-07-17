@@ -538,7 +538,9 @@ const Chat: React.FC = () => {
                       ) : isAudio && message.media?.id ? (
                         <div className="flex flex-col items-center">
                           <audio controls className="w-32 h-8 mb-1">
-                            <source src={`https://wanesni.com/assets/${message.media.id}`} type="audio/wav" />
+                            <source src={`https://wanesni.com/assets/${message.media.id}`} type="audio/webm" />
+                            <source src={`https://wanesni.com/assets/${message.media.id}`} type="audio/mp3" />
+                            Your browser does not support the audio element.
                           </audio>
                           {message.message && <span className="text-xs mt-1">{message.message}</span>}
                         </div>
