@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server';
 
 export function middleware(request: NextRequest) {
   // Only protect these paths
-  const protectedPaths = ['/', '/packs'];
+  const protectedPaths = ['/', '/packs', '/purchase', '/purchase-history', '/chat', '/chats'];
   const { pathname } = request.nextUrl;
 
   // If the path is protected and no access_token cookie, redirect to /login

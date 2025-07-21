@@ -21,6 +21,12 @@ const io = new Server(server, {
 // Store online users
 const onlineUsers = new Map(); // socketId -> { userId, firstName, socket }
 
+// Random call matchmaking queue
+const waitingUsers = [];
+
+// Track active call rooms: roomID -> [userA, userB]
+const activeRooms = new Map(); // roomID -> [userA, userB]
+
 io.on("connection", (socket) => {
   console.log("A user connected:", socket.id);
 
@@ -50,10 +56,75 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Listen for random call matchmaking
+  socket.on("random-call-waiting", (data) => {
+    // Prevent duplicate entries
+    if (waitingUsers.find(u => u.userId === data.userId)) return;
+    waitingUsers.push({ socket, userId: data.userId, name: data.name });
+    if (waitingUsers.length >= 2) {
+      const userA = waitingUsers.shift();
+      const userB = waitingUsers.shift();
+      const roomID = 'call-' + Math.random().toString(36).substr(2, 16);
+      userA.socket.currentRoomID = roomID;
+      userB.socket.currentRoomID = roomID;
+      activeRooms.set(roomID, [userA, userB]);
+      userA.socket.emit('random-call-match', { roomID });
+      userB.socket.emit('random-call-match', { roomID });
+      console.log(`Matched users ${userA.userId} and ${userB.userId} in room ${roomID}`);
+    }
+  });
+
+  // Listen for leaving a call (client should emit this when leaving or ending call)
+  socket.on("leave-random-call", () => {
+    const roomID = socket.currentRoomID;
+    if (!roomID) return;
+    const users = activeRooms.get(roomID) || [];
+    // Remove this user from the room
+    const remainingUsers = users.filter(u => u.socket !== socket);
+    activeRooms.set(roomID, remainingUsers);
+    delete socket.currentRoomID;
+    // If there is a waiting user, match them with the remaining user in the same room
+    if (remainingUsers.length === 1 && waitingUsers.length > 0) {
+      const nextUser = waitingUsers.shift();
+      const stillInRoom = remainingUsers[0];
+      nextUser.socket.currentRoomID = roomID;
+      activeRooms.set(roomID, [stillInRoom, nextUser]);
+      stillInRoom.socket.emit('random-call-match', { roomID });
+      nextUser.socket.emit('random-call-match', { roomID });
+      console.log(`Rolled in user ${nextUser.userId} to room ${roomID} with ${stillInRoom.userId}`);
+    }
+    // If no one left, clean up
+    if (activeRooms.get(roomID).length === 0) {
+      activeRooms.delete(roomID);
+    }
+  });
+
   // Listen for messages from clients
   socket.on("message", (data) => {
     // Broadcast the message to all clients (or use rooms for private chats)
     io.emit("message", data);
+  });
+
+  // Listen for direct video call invites and relay to the callee
+  socket.on("video-call-invite", (data) => {
+    // data: { to, from, roomID, callerName }
+    for (const [sockId, userInfo] of onlineUsers.entries()) {
+      if (userInfo.userId === data.to) {
+        userInfo.socket.emit("video-call-invite", data);
+        break;
+      }
+    }
+  });
+
+  // Listen for call reject and relay to the caller
+  socket.on("video-call-reject", (data) => {
+    // data: { to, from, roomID }
+    for (const [sockId, userInfo] of onlineUsers.entries()) {
+      if (userInfo.userId === data.to) {
+        userInfo.socket.emit("video-call-reject", data);
+        break;
+      }
+    }
   });
 
   // Relay typing events
@@ -77,6 +148,32 @@ io.on("connection", (socket) => {
       io.emit("onlineUsers", onlineUsersList);
       
       console.log("Online users after disconnect:", onlineUsersList);
+    }
+    // Remove from waitingUsers if present
+    const idx = waitingUsers.findIndex(u => u.socket === socket);
+    if (idx !== -1) waitingUsers.splice(idx, 1);
+
+    // Remove from activeRooms if present
+    if (socket.currentRoomID) {
+      const roomID = socket.currentRoomID;
+      const users = activeRooms.get(roomID) || [];
+      const remainingUsers = users.filter(u => u.socket !== socket);
+      activeRooms.set(roomID, remainingUsers);
+      delete socket.currentRoomID;
+      // If there is a waiting user, match them with the remaining user in the same room
+      if (remainingUsers.length === 1 && waitingUsers.length > 0) {
+        const nextUser = waitingUsers.shift();
+        const stillInRoom = remainingUsers[0];
+        nextUser.socket.currentRoomID = roomID;
+        activeRooms.set(roomID, [stillInRoom, nextUser]);
+        stillInRoom.socket.emit('random-call-match', { roomID });
+        nextUser.socket.emit('random-call-match', { roomID });
+        console.log(`Rolled in user ${nextUser.userId} to room ${roomID} with ${stillInRoom.userId}`);
+      }
+      // If no one left, clean up
+      if (activeRooms.get(roomID).length === 0) {
+        activeRooms.delete(roomID);
+      }
     }
   });
 });

@@ -117,7 +117,7 @@ export default function StripePaymentForm({ pack, user_id, onClose, onSuccess }:
           exp_year: paymentMethod.card?.exp_year || 0,
           stripe_payment_intent_id: paymentMethod.id, // or use a real payment intent id if available
           amount: pack.pricing,
-          status: 'completed',
+          // status: 'completed',
           coins: pack.coins
         }),
       });

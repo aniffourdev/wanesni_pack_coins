@@ -8,6 +8,7 @@ import { FaGift } from 'react-icons/fa';
 import { FaImage } from 'react-icons/fa';
 import { FaRegCommentDots } from 'react-icons/fa';
 import { FaMicrophone, FaStop } from 'react-icons/fa';
+import { UserService } from "@/lib/user";
 
 // Update socket initialization to include access token
 type SocketOptions = {
@@ -28,6 +29,7 @@ interface Message {
   status: string;
   gift_id?: { gift_image?: string; name_gift?: string };
   media?: { id: string };
+  media_url?: string; // Added for image messages
 }
 
 const Chat: React.FC = () => {
@@ -56,6 +58,10 @@ const Chat: React.FC = () => {
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [socketUrl, setSocketUrl] = useState<string>('');
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => { setMounted(true); }, []);
+  if (!mounted) return null;
 
   // Get socket URL on client side only
   useEffect(() => {
@@ -127,31 +133,21 @@ const Chat: React.FC = () => {
 
   // Fetch current user ID
   useEffect(() => {
-    const fetchUserId = async () => {
+    const fetchUser = async () => {
       try {
         setUserLoading(true);
         setUserLoadError(null);
-        const response = await axios.get("https://wanesni.com/users/me", {
-          headers: {
-            Authorization: accessToken ? `Bearer ${accessToken}` : '',
-          },
-        });
-        console.log('/users/me response:', response.data);
-        if (response.data && response.data.data && response.data.data.id) {
-          setUserId(response.data.data.id);
-          setUserCoins(response.data.data.coins || 0);
-          console.log('Loaded userId:', response.data.data.id);
-        } else {
-          setUserLoadError('User ID not found in /users/me response: ' + JSON.stringify(response.data));
-          setUserId(null);
-        }
+        const user = await UserService.getCurrentUser();
+        setUserId(user.id);
+        setUserCoins(user.coins || 0);
+        console.log('Loaded user:', user);
       } catch (error: any) {
-        setUserLoadError(error?.response?.data?.error || error.message || 'Failed to load user');
+        setUserLoadError(error?.message || 'Failed to load user');
         setUserId(null);
       }
       setUserLoading(false);
     };
-    fetchUserId();
+    fetchUser();
 
     // Only fetch messages if a user is selected
     const fetchMessages = async () => {
@@ -187,14 +183,24 @@ const Chat: React.FC = () => {
     // Fetch all users (for reference, but we'll use online users for display)
     const fetchUsers = async () => {
       try {
+        if (!accessToken) {
+          setUserLoadError("Not authenticated. Please log in.");
+          setUsers([]);
+          return;
+        }
         const response = await axios.get("https://wanesni.com/users", {
           headers: {
-            Authorization: accessToken ? `Bearer ${accessToken}` : '',
+            Authorization: `Bearer ${accessToken}`,
           },
         });
         setUsers(response.data.data);
-      } catch (error) {
-        console.error("Error fetching users:", error);
+      } catch (error: any) {
+        if (error.response?.status === 403) {
+          setUserLoadError("You do not have permission to view users. Please contact support if this is an error.");
+        } else {
+          setUserLoadError("Error fetching users.");
+        }
+        setUsers([]);
       }
     };
     fetchUsers();
@@ -259,7 +265,19 @@ const Chat: React.FC = () => {
             'Content-Type': 'multipart/form-data',
           },
         });
-        setUploadedImageId(response.data.data.id);
+        const uploadedId = response.data.data.id;
+        // PATCH to set folder after upload
+        await axios.patch(
+          `https://wanesni.com/files/${uploadedId}`,
+          { folder: '7eb75910-553f-45a9-9758-70fab9a0fa7e' },
+          {
+            headers: {
+              Authorization: accessToken ? `Bearer ${accessToken}` : '',
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+        setUploadedImageId(uploadedId);
       } catch (error) {
         setSendError('Failed to upload image');
         setSelectedImage(null);
@@ -329,6 +347,7 @@ const Chat: React.FC = () => {
       setSendError('No receiver selected');
       return;
     }
+    // Message is only required if not sending image, audio, or gift
     if (!messageInput.trim() && !selectedGift && !uploadedImageId) {
       setSendError('Message is empty');
       return;
@@ -344,7 +363,7 @@ const Chat: React.FC = () => {
       const payload: any = {
         receiver_id: selectedUser.id,
         message_type: uploadedImageId ? ["media"] : selectedGift ? ["gift"] : ["text"],
-        message: messageInput,
+        message: messageInput, // message is optional
         status: "sent"
       };
       if (selectedGift) {
@@ -352,6 +371,7 @@ const Chat: React.FC = () => {
       }
       if (uploadedImageId) {
         payload.media = uploadedImageId;
+        payload.media_url = uploadedImageId; // Use file ID for Directus image field
       }
       console.log('Sending payload:', payload);
       const response = await axios.post(
@@ -365,13 +385,25 @@ const Chat: React.FC = () => {
         }
       );
       console.log('Message sent, response:', response.data);
-      setMessages((prev) => [...prev, response.data.data]);
+      setMessages((prev) => [...prev, {
+        ...response.data.data,
+        // If this is an image message, ensure media_url is present for immediate rendering
+        ...(uploadedImageId ? { media_url: uploadedImageId } : {}),
+      }]);
       if (socket) {
+        // For gifts, include the full gift object in the socket payload
+        let giftPayload = undefined;
+        if (selectedGift) {
+          giftPayload = {
+            ...selectedGift
+          };
+        }
         socket.emit("message", {
           type: "message",
           to: selectedUser.id,
-          message: messageInput,
+          message: messageInput, // message is optional
           message_type: uploadedImageId ? ["media"] : selectedGift ? ["gift"] : ["text"],
+          gift: giftPayload,
           gift_id: selectedGift ? selectedGift.id : undefined,
           media: uploadedImageId ? uploadedImageId : undefined,
         });
@@ -407,6 +439,17 @@ const Chat: React.FC = () => {
       });
 
       const audioFileId = uploadResponse.data.data.id;
+      // PATCH to set folder after upload
+      await axios.patch(
+        `https://wanesni.com/files/${audioFileId}`,
+        { folder: '7eb75910-553f-45a9-9758-70fab9a0fa7e' },
+        {
+          headers: {
+            Authorization: accessToken ? `Bearer ${accessToken}` : '',
+            'Content-Type': 'application/json',
+          },
+        }
+      );
 
       // Send audio message
       const payload = {
@@ -453,241 +496,268 @@ const Chat: React.FC = () => {
     setSending(false);
   };
 
-  return (
-    <div className="flex flex-col w-full max-w-md mx-auto h-screen bg-white shadow-md">
-      {userLoading && <div className="p-4 text-center text-gray-500">Loading user...</div>}
-      {userLoadError && <div className="p-4 text-center text-red-500">{userLoadError}</div>}
-      {!userLoading && !userLoadError && (
-        <>
-          <div className="bg-pink-500 text-white p-4">
-            <h1 className="text-center text-xl font-bold">Wanesni ChatAPP</h1>
+  // ... (imports and all state, effects, and logic remain untouched)
+
+// Inside Chat Component JSX:
+return (
+  <div className="flex flex-col w-full max-w-md mx-auto h-screen bg-white shadow-md">
+    {userLoading && <div className="p-4 text-center text-gray-500">Loading user...</div>}
+    {userLoadError && <div className="p-4 text-center text-red-500">{userLoadError}</div>}
+    {!userLoading && !userLoadError && (
+      <>
+        <div className="bg-pink-500 text-white p-4">
+          <h1 className="text-center text-xl font-bold">Wanesni ChatAPP</h1>
+        </div>
+        <div className="p-2 border-b border-gray-200 py-5">
+          <div className="mb-5 uppercase text-center">Select a user to chat with:</div>
+          <div className="flex flex-wrap gap-2">
+            {onlineUsers.filter(u => u.id && u.id !== userId).map((user) => (
+              <button
+                key={user.id}
+                onClick={() => setSelectedUser(user)}
+                className={`px-3 py-1 cursor-pointer rounded-full ${selectedUser?.id === user.id ? 'bg-pink-500 text-white' : 'bg-gray-200'}`}
+                disabled={userLoading || !!userLoadError}
+              >
+                {user.first_name || user.id}
+              </button>
+            ))}
           </div>
-          <div className="p-2 border-b border-gray-200 py-5">
-            <div className="mb-5 uppercase text-center">Select a user to chat with:</div>
-            <div className="flex flex-wrap gap-2">
-              {onlineUsers.filter(u => u.id && u.id !== userId).map((user) => (
-                <button
-                  key={user.id}
-                  onClick={() => setSelectedUser(user)}
-                  className={`px-3 py-1 cursor-pointer rounded-full ${selectedUser?.id === user.id ? 'bg-pink-500 text-white' : 'bg-gray-200'}`}
-                  disabled={userLoading || !!userLoadError}
-                >
-                  {user.first_name || user.id}
-                </button>
-              ))}
-            </div>
-            {selectedUser && (
-              <div className="mt-2 text-sm text-gray-600 text-center">Chatting with: <span className="font-bold">{selectedUser.first_name || selectedUser.id}</span></div>
-            )}
-          </div>
-          {!selectedUser && (
-            <div className="flex-1 flex items-center justify-center text-gray-400 text-lg">
-              Start chatting now by selecting a user
-            </div>
-          )}
           {selectedUser && (
-            <div className="flex-1 p-4 overflow-y-auto">
-              {messages.length === 0 && (
-                <div className="text-center text-gray-400 mt-10">Start Texting "{selectedUser.first_name || selectedUser.id}" Now</div>
-              )}
-              {messages.map((message, index) => {
-                const senderId = typeof message.user_created === 'object' ? message.user_created.id : message.user_created;
-                const isMe = senderId === userId;
-                const isOther = selectedUser && senderId === selectedUser.id;
-                // Debug log
-                console.log('Message debug:', {
-                  senderId,
-                  userId,
-                  selectedUserId: selectedUser?.id,
-                  isMe,
-                  isOther,
-                  message
-                });
-                const isGift = Array.isArray(message.message_type)
-                  ? message.message_type.includes('gift')
-                  : message.message_type === 'gift';
-                const isAudio = Array.isArray(message.message_type)
-                  ? message.message_type.includes('audio')
-                  : message.message_type === 'audio';
-                return (
-                  <div
-                    key={message.id || index}
-                    className={`flex mb-3 ${isOther ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div
-                      className={`max-w-xs px-4 py-2 rounded-2xl shadow text-sm break-words
-                        ${isOther ? 'bg-pink-500 text-white rounded-br-none' : 'bg-gray-200 text-gray-900 rounded-bl-none'}
-                      `}
-                      style={{ minWidth: '80px' }}
-                    >
-                      <div className="font-bold mb-1 text-xs opacity-70">
-                        {typeof message.user_created === 'object'
-                          ? message.user_created.first_name || message.user_created.id
-                          : message.user_created}
-                      </div>
-                      {isGift && message.gift_id?.gift_image ? (
-                        <div className="flex flex-col items-center">
-                          <img
-                            src={`https://wanesni.com/assets/${message.gift_id.gift_image}`}
-                            alt={'Gift'}
-                            className="w-16 h-16 object-contain mb-1 rounded"
-                          />
-                          <span className="text-xs font-semibold text-pink-200">{message.gift_id.name_gift}</span>
-                          {message.message && <span className="text-xs mt-1">{message.message}</span>}
-                        </div>
-                      ) : isAudio && message.media?.id ? (
-                        <div className="flex flex-col items-center">
-                          <audio controls className="w-32 h-8 mb-1">
-                            <source src={`https://wanesni.com/assets/${message.media.id}`} type="audio/webm" />
-                            <source src={`https://wanesni.com/assets/${message.media.id}`} type="audio/mp3" />
-                            Your browser does not support the audio element.
-                          </audio>
-                          {message.message && <span className="text-xs mt-1">{message.message}</span>}
-                        </div>
-                      ) : message.media?.id ? (
-                        <div className="flex flex-col items-center">
-                          <img
-                            src={`https://wanesni.com/assets/${message.media.id}`}
-                            alt={'Media'}
-                            className="w-32 h-32 object-contain mb-1 rounded"
-                          />
-                          {message.message && <span className="text-xs mt-1">{message.message}</span>}
-                        </div>
-                      ) : (
-                        <div>{message.message}</div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-              {isTyping && (
-                <div className="flex items-end justify-start text-gray-500 mb-2">
-                  <FaRegCommentDots className="mr-2 animate-bounce" />
-                  <span>{selectedUser?.first_name || "User"} is typing...</span>
-                </div>
-              )}
+            <div className="mt-2 text-sm text-gray-600 text-center">
+              Chatting with: <span className="font-bold">{selectedUser.first_name || selectedUser.id}</span>
             </div>
           )}
-          <div className="p-4 border-t border-gray-200 flex">
-            {/* Gift Icon */}
-            <button
-              type="button"
-              className="mr-2 flex items-center justify-center text-pink-500 hover:text-pink-700 focus:outline-none"
-              onClick={() => setShowGiftModal(true)}
-              style={{ fontSize: 24 }}
-            >
-              <FaGift />
-            </button>
-            {/* Image Icon */}
-            <label className="mr-2 flex items-center justify-center text-pink-500 hover:text-pink-700 focus:outline-none cursor-pointer" style={{ fontSize: 24 }}>
-              <FaImage />
-              <input type="file" accept="image/*" className="hidden" onChange={handleImageChange} />
-            </label>
-            {imagePreview && (
-              <div className="flex items-center ml-2 bg-pink-100 px-2 py-1 rounded-full text-pink-700 text-xs">
-                <img src={imagePreview} alt="preview" className="w-8 h-8 object-contain rounded mr-1" />
-                <button
-                  type="button"
-                  className="ml-1 text-pink-500 hover:text-pink-700"
-                  onClick={() => { setSelectedImage(null); setImagePreview(null); setUploadedImageId(null); }}
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            {/* Audio Icon */}
-            <button
-              type="button"
-              className="mr-2 flex items-center justify-center text-pink-500 hover:text-pink-700 focus:outline-none"
-              onClick={isRecording ? stopRecording : startRecording}
-              style={{ fontSize: 24 }}
-              disabled={sending}
-            >
-              {isRecording ? <FaStop className="text-red-500" /> : <FaMicrophone />}
-            </button>
-            {audioUrl && (
-              <div className="flex items-center ml-2 bg-pink-100 px-2 py-1 rounded-full text-pink-700 text-xs">
-                <audio controls className="w-20 h-8">
-                  <source src={audioUrl} type="audio/wav" />
-                </audio>
-                <button
-                  type="button"
-                  className="ml-1 text-pink-500 hover:text-pink-700"
-                  onClick={() => { setAudioBlob(null); setAudioUrl(null); setAudioChunks([]); }}
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            <input
-              type="text"
-              className="flex-1 border rounded-l px-3 py-2 focus:outline-none"
-              placeholder="Type your message..."
-              value={messageInput}
-              onChange={handleInputChange}
-              disabled={sending}
-            />
-            {selectedGift && (
-              <div className="flex items-center ml-2 bg-pink-100 px-2 py-1 rounded-full text-pink-700 text-xs">
-                <FaGift className="mr-1" />
-                {selectedGift.name_gift}
-                <button
-                  type="button"
-                  className="ml-1 text-pink-500 hover:text-pink-700"
-                  onClick={() => setSelectedGift(null)}
-                >
-                  ×
-                </button>
-              </div>
-            )}
-            <button
-              onClick={audioBlob ? sendAudioMessage : sendMessage}
-              className={`bg-pink-500 text-white p-2 rounded-r-lg hover:bg-pink-600 focus:outline-none focus:ring-2 focus:ring-pink-500 ${sending || !selectedUser || (!messageInput.trim() && !selectedGift && !audioBlob) || userLoading || userLoadError ? 'opacity-50 cursor-not-allowed' : ''}`}
-              disabled={sending || !selectedUser || (!messageInput.trim() && !selectedGift && !audioBlob) || userLoading || !!userLoadError}
-            >
-              {audioBlob ? 'Send Audio' : 'Send'}
-            </button>
-            {/* Gift Modal */}
-            {showGiftModal && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
-                <div className="bg-white rounded-lg p-6 max-w-lg w-full shadow-lg relative">
-                  <button
-                    className="absolute top-2 right-2 text-gray-400 hover:text-gray-600 text-2xl"
-                    onClick={() => setShowGiftModal(false)}
-                  >
-                    ×
-                  </button>
-                  <h2 className="text-lg font-bold mb-4 text-center">Select a Gift</h2>
-                  <div className="grid grid-cols-3 gap-4 max-h-80 overflow-y-auto">
-                    {gifts.map((gift) => (
-                      <div
-                        key={gift.id}
-                        className="flex flex-col items-center cursor-pointer hover:bg-pink-100 p-2 rounded-lg border border-transparent hover:border-pink-300"
-                        onClick={() => {
-                          setSelectedGift(gift);
-                          setShowGiftModal(false);
-                        }}
-                      >
-                        {gift.gift_image && (
-                          <img
-                            src={`https://wanesni.com/assets/${gift.gift_image.id}`}
-                            alt={gift.name_gift}
-                            className="w-12 h-12 object-contain mb-1 rounded"
-                          />
-                        )}
-                        <span className="text-xs font-semibold text-gray-700">{gift.name_gift}</span>
-                        <span className="text-xs text-pink-500">{gift.coins_gift} coins</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
+        </div>
+        {!selectedUser && (
+          <div className="flex-1 flex items-center justify-center text-gray-400 text-lg">
+            Start chatting now by selecting a user
           </div>
-        </>
-      )}
-    </div>
-  );
+        )}
+        {selectedUser && (
+          <div className="flex-1 p-4 overflow-y-auto">
+            <ul className="space-y-5">
+  {messages.map((message, index) => {
+    const senderId = typeof message.user_created === 'object' ? message.user_created.id : message.user_created;
+    const isMe = senderId === userId;
+    const isOther = selectedUser && senderId === selectedUser.id;
+    const isGift = Array.isArray(message.message_type)
+      ? message.message_type.includes('gift')
+      : message.message_type === 'gift';
+    const isAudio = Array.isArray(message.message_type)
+      ? message.message_type.includes('audio')
+      : message.message_type === 'audio';
+
+    return (
+      <li
+        key={message.id || index}
+        className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
+      >
+        {!isMe && (
+          <img
+            className="inline-block size-9 rounded-full"
+            src={`https://ui-avatars.com/api/?name=${
+              typeof message.user_created === 'object'
+                ? message.user_created.first_name || 'User'
+                : 'User'
+            }`}
+            alt="Avatar"
+          />
+        )}
+        <div
+          className={`${
+            isMe
+              ? 'bg-pink-500 text-white rounded-2xl p-4 space-y-3 max-w-xs ml-2'
+              : 'bg-gray-200 text-gray-800 rounded-2xl p-4 space-y-3 max-w-xs mr-2'
+          }`}
+        >
+          {isGift && message.gift_id?.gift_image ? (
+            <div className="flex flex-col items-center">
+              <img
+                src={`https://wanesni.com/assets/${message.gift_id.gift_image}`}
+                alt={'Gift'}
+                className="w-16 h-16 object-contain mb-1 rounded"
+              />
+              <span className="text-xs font-semibold text-pink-500">{message.gift_id.name_gift}</span>
+              {message.message && <span className="text-xs mt-1 text-gray-800">{message.message}</span>}
+            </div>
+          ) : isAudio && message.media?.id ? (
+            <audio controls className="w-40">
+              <source src={`https://wanesni.com/assets/${message.media.id}`} type="audio/webm" />
+              <source src={`https://wanesni.com/assets/${message.media.id}`} type="audio/mp3" />
+              Your browser does not support the audio element.
+            </audio>
+          ) : message.media_url ? (
+            <div className="flex flex-col items-center">
+              <img
+                src={`https://wanesni.com/assets/${message.media_url}`}
+                alt="Media"
+                className="rounded-lg object-cover w-52 h-auto max-h-64"
+              />
+              {message.message && <p className="text-sm text-gray-800 mt-2">{message.message}</p>}
+            </div>
+          ) : (
+            <div>
+              {message.message}
+            </div>
+          )}
+        </div>
+        {isMe && (
+          <span className="shrink-0 inline-flex items-center justify-center size-9.5 rounded-full bg-gray-600">
+            <span className="text-sm font-medium text-white">ME</span>
+          </span>
+        )}
+      </li>
+    );
+  })}
+  {isTyping && (
+    <li className="flex items-end text-gray-500">
+      <FaRegCommentDots className="mr-2 animate-bounce" />
+      <span>{selectedUser?.first_name || 'User'} is typing...</span>
+    </li>
+  )}
+</ul>
+
+          </div>
+        )}
+
+        {/* The input section remains unchanged */}
+        <div className="p-4 border-t border-gray-200 flex items-end gap-2">
+          {/* Image upload */}
+          <button
+            type="button"
+            className="p-2 rounded-full hover:bg-gray-100"
+            onClick={() => document.getElementById('chat-image-input')?.click()}
+            title="Send Image"
+          >
+            <FaImage className="text-xl text-pink-500" />
+          </button>
+          <input
+            id="chat-image-input"
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleImageChange}
+          />
+
+          {/* Gift send */}
+          <button
+            type="button"
+            className="p-2 rounded-full hover:bg-gray-100"
+            onClick={() => setShowGiftModal(true)}
+            title="Send Gift"
+          >
+            <FaGift className="text-xl text-yellow-500" />
+          </button>
+
+          {/* Audio recording */}
+          <button
+            type="button"
+            className="p-2 rounded-full hover:bg-gray-100"
+            onClick={isRecording ? stopRecording : startRecording}
+            title={isRecording ? "Stop Recording" : "Record Audio"}
+          >
+            {isRecording ? (
+              <FaStop className="text-xl text-red-500 animate-pulse" />
+            ) : (
+              <FaMicrophone className="text-xl text-blue-500" />
+            )}
+          </button>
+
+          {/* Message input */}
+          <input
+            type="text"
+            className="flex-1 border rounded-full px-4 py-2 focus:outline-none focus:ring-2 focus:ring-pink-300"
+            placeholder="Type your message..."
+            value={messageInput}
+            onChange={handleInputChange}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+              }
+            }}
+            disabled={sending}
+          />
+
+          {/* Send button */}
+          <button
+            type="button"
+            className="ml-2 px-4 py-2 bg-pink-500 text-white rounded-full hover:bg-pink-600 disabled:opacity-50"
+            onClick={sendMessage}
+            disabled={sending || (!messageInput.trim() && !selectedGift && !uploadedImageId)}
+            title="Send"
+          >
+            Send
+          </button>
+        </div>
+
+        {/* Image preview modal */}
+        {imagePreview && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-4 max-w-xs w-full flex flex-col items-center">
+              <img src={imagePreview} alt="Preview" className="rounded-lg mb-4 max-h-64" />
+              <div className="flex gap-2">
+                <button
+                  className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
+                  onClick={() => setImagePreview(null)}
+                >
+                  OK
+                </button>
+                <button
+                  className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
+                  onClick={() => {
+                    setSelectedImage(null);
+                    setImagePreview(null);
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Gift modal */}
+        {showGiftModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full">
+              <h2 className="text-lg font-bold mb-4">Select a Gift</h2>
+              <div className="grid grid-cols-3 gap-4 max-h-64 overflow-y-auto">
+                {gifts.map(gift => (
+                  <button
+                    key={gift.id}
+                    className={`flex flex-col items-center p-2 border rounded-lg hover:bg-pink-50 ${selectedGift?.id === gift.id ? 'border-pink-500' : 'border-gray-200'}`}
+                    onClick={() => setSelectedGift(gift)}
+                  >
+                    <img src={`https://wanesni.com/assets/${gift.gift_image}`} alt={gift.name_gift} className="w-12 h-12 object-contain mb-1" />
+                    <span className="text-xs font-semibold text-pink-500">{gift.name_gift}</span>
+                    <span className="text-xs text-gray-600">{gift.coins_gift} coins</span>
+                  </button>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2 mt-4">
+                <button
+                  className="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400"
+                  onClick={() => setShowGiftModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="px-4 py-2 bg-pink-500 text-white rounded hover:bg-pink-600"
+                  onClick={() => setShowGiftModal(false)}
+                  disabled={!selectedGift}
+                >
+                  Select
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    )}
+  </div>
+);
+
 };
 
 export default Chat;

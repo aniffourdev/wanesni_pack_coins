@@ -2,9 +2,7 @@
 
 import { useState, useEffect } from "react";
 import StripePaymentForm from "./StripePaymentForm";
-import Cookies from "js-cookie";
 import type { Pack } from "@/types/pack";
-import Link from "next/link";
 
 export default function PackList() {
   const [packs, setPacks] = useState<Pack[]>([]);
@@ -55,12 +53,6 @@ export default function PackList() {
     setSelectedPack(null);
   };
 
-  const handleLogout = () => {
-    Cookies.remove("access_token", { path: "/" });
-    Cookies.remove("refresh_token", { path: "/" });
-    window.location.href = "/login";
-  };
-
   if (loading) {
     return <div className="text-center py-10">Loading packs...</div>;
   }
@@ -68,14 +60,6 @@ export default function PackList() {
     return (
       <div className="text-center py-10 text-red-600">
         {error}
-        <div className="mt-4">
-          <button
-            onClick={handleLogout}
-            className="bg-gray-200 hover:bg-gray-300 text-gray-800 px-6 py-2 rounded shadow"
-          >
-            Log out
-          </button>
-        </div>
       </div>
     );
   }
@@ -103,21 +87,6 @@ export default function PackList() {
           </li>
         ))}
       </ul>
-
-      <div className="mt-8 flex justify-center items-center gap-2">
-        <button
-          onClick={handleLogout}
-          className="bg-gray-200 hover:bg-gray-300 text-gray-800 px-6 py-2 rounded shadow"
-        >
-          Log out
-        </button>
-        <Link
-          href="/chat"
-          className="bg-pink-200 hover:bg-pink-500 text-pink-500 hover:text-white px-6 py-2 rounded shadow"
-        >
-          Chatbox
-        </Link>
-      </div>
 
       {showPaymentForm && selectedPack && (
         <StripePaymentForm
